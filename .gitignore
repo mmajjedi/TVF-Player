@@ -1,0 +1,7 @@
+out/
+*.tvf
+*.mp3
+*.mp4
+*.mkv
+__pycache__/
+.DS_Store
