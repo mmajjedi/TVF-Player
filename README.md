@@ -131,6 +131,8 @@ optional — get it wrong and the video won't fit.
 
 Power off while wiring. Only one pin here is 5 V, and it's marked.
 
+![Wiring diagram for the ESP32 Pocket TV](docs/images/wiring.png)
+
 ### The screen
 
 | Screen pin | Goes to | |
