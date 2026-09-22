@@ -10,6 +10,20 @@ Everything lands in one output folder, split by where it has to go:
     out/sd/mp3/0001.mp3     -> the DFPlayer's microSD, at the card root
     out/sd/mp3/0002.mp3
 
+With --sdcard the video is meant for the SD card module instead of the
+ESP32's flash, so there is no 2 MB limit, and it is named after the input
+(or --name) so several can sit on one card and show up in the menu:
+
+    out/videocard/My Movie.tvf  -> the SD module's microSD, at the card root
+
+With several videos, give each one its own --slot (1-99). Its sound then goes
+in that numbered DFPlayer folder, and the number is stored in the .tvf, so the
+player finds the right audio for whichever video is picked:
+
+    python tvfpack.py movie.mp4 out --sdcard --slot 3 --audio ...
+    out/videocard/movie.tvf  -> SD module's card
+    out/sd/03/001.mp3        -> DFPlayer's card, as /03/001.mp3
+
 Modes:
     mjpeg   colour panels (ST7789, SSD1351). Baseline JPEG frames, decoded
             on the ESP32 by TJpgDec.
@@ -128,7 +142,7 @@ def encode_mono(img, width, height, contrast, invert):
     return out.tobytes()
 
 
-def extract_audio(src, out_dir, chunk, bitrate, start, duration):
+def extract_audio(src, out_dir, pattern, chunk, bitrate, start, duration):
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.mp3"):
         old.unlink()
@@ -146,7 +160,7 @@ def extract_audio(src, out_dir, chunk, bitrate, start, duration):
         "-segment_time", str(chunk),
         "-segment_start_number", "1",
         "-reset_timestamps", "1",
-        str(out_dir / "%04d.mp3"),
+        str(out_dir / pattern),
     ]
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -171,6 +185,12 @@ def main():
     p.add_argument("--invert", action="store_true", help="mono mode only")
     p.add_argument("--start", type=float, default=0, help="seconds into the source")
     p.add_argument("--duration", type=float, default=None, help="seconds to encode")
+    p.add_argument("--sdcard", action="store_true",
+                   help="video goes on the SD card module, not the ESP32's flash "
+                        "(no 2 MB limit; set VIDEO_SOURCE to SOURCE_SDCARD)")
+    p.add_argument("--name", default=None,
+                   help="--sdcard only: file name shown in the player's menu "
+                        "(default: the input's name)")
 
     # --- audio (new) ---
     p.add_argument("--audio", action="store_true",
@@ -178,6 +198,10 @@ def main():
     p.add_argument("--audio-chunk", type=int, default=30,
                    help="seconds per MP3 track, 1-255 (default 30)")
     p.add_argument("--audio-bitrate", type=int, default=128, help="kbps (default 128)")
+    p.add_argument("--slot", type=int, default=0,
+                   help="DFPlayer folder 1-99 for this video's sound, so several "
+                        "videos can share one card - use a different slot for "
+                        "each (default: the /mp3 folder, for a single video)")
 
     a = p.parse_args()
 
@@ -190,9 +214,22 @@ def main():
     if not 1 <= a.audio_chunk <= 255:
         die("--audio-chunk must be between 1 and 255 (it is stored in one byte)")
 
-    out_dir  = Path(a.output)
-    out_path = out_dir / "data" / "clip.tvf"
-    mp3_dir  = out_dir / "sd" / "mp3"
+    if not 0 <= a.slot <= 99:
+        die("--slot must be between 1 and 99 (the DFPlayer's folder numbers)")
+    if a.name and not a.sdcard:
+        die("--name only applies with --sdcard - the flash version always plays clip.tvf")
+
+    out_dir = Path(a.output)
+    if a.sdcard:
+        name = Path(a.name).stem if a.name else Path(a.input).stem
+        out_path = out_dir / "videocard" / f"{name}.tvf"
+    else:
+        out_path = out_dir / "data" / "clip.tvf"
+    # DFPlayer naming: /mp3/0001.mp3 by default, /03/001.mp3 in a slot.
+    if a.slot:
+        mp3_dir, mp3_pattern = out_dir / "sd" / f"{a.slot:02d}", "%03d.mp3"
+    else:
+        mp3_dir, mp3_pattern = out_dir / "sd" / "mp3", "%04d.mp3"
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     do_audio = a.audio and probe_audio(a.input)
@@ -228,34 +265,55 @@ def main():
 
         out.seek(0)
         out.write(struct.pack(
-            "<4sBBHHBBIII", MAGIC, VERSION,
+            "<4sBBHHBBIIIB", MAGIC, VERSION,
             MODE_MJPEG if a.mode == "mjpeg" else MODE_MONO,
             a.width, a.height, a.fps, chunk_field,
-            count, index_offset, biggest))
+            count, index_offset, biggest, a.slot))
 
     print(f"\r{count} frames, {a.width}x{a.height} @ {a.fps}fps", file=sys.stderr)
     size = out_path.stat().st_size
     print(f"video   {size/1024/1024:.2f} MB  ({count/a.fps:.1f}s, "
           f"largest frame {biggest/1024:.1f} kB)")
 
-    if size > 1_800_000:
+    if a.sdcard:
+        if size >= 4 * 1024**3:
+            print(f"\nwarning: {size/1024**3:.2f} GB is over FAT32's 4 GB per-file "
+                  f"limit.\nshorten with --duration, or lower -q / --fps.",
+                  file=sys.stderr)
+    elif size > 1_800_000:
         print(f"\nwarning: {size/1024/1024:.2f} MB will not fit a 2 MB LittleFS "
               f"partition.\nkeep it under about 1.7 MB - shorten with --duration, "
-              f"or lower -q / --fps.", file=sys.stderr)
+              f"or lower -q / --fps.\nor pack it with --sdcard and play it from an "
+              f"SD card module, which has no limit.", file=sys.stderr)
 
     if do_audio:
-        tracks = extract_audio(a.input, mp3_dir, a.audio_chunk, a.audio_bitrate,
-                               a.start, a.duration)
+        # A numbered DFPlayer folder only holds tracks 001-255.
+        needed = -(-count // (a.fps * a.audio_chunk))
+        if a.slot and needed > 255:
+            longer = -(-count // (a.fps * 255))
+            die(f"{needed} audio tracks won't fit one DFPlayer folder (max 255).\n"
+                f"rerun with --audio-chunk {longer} or more")
+        tracks = extract_audio(a.input, mp3_dir, mp3_pattern, a.audio_chunk,
+                               a.audio_bitrate, a.start, a.duration)
         total = sum(t.stat().st_size for t in tracks)
         print(f"audio   {total/1024/1024:.2f} MB  ({len(tracks)} track(s) of "
               f"{a.audio_chunk}s)")
 
     print(f"\nwrote {out_dir}/")
-    print(f"  data/clip.tvf            -> copy into firmware/tvf_player/data/, "
-          f"then Upload LittleFS Data")
+    if a.sdcard:
+        print(f"  videocard/{out_path.name}\n"
+              f"      -> copy onto the SD card module's FAT32 microSD, at the root")
+    else:
+        print(f"  data/clip.tvf\n"
+              f"      -> copy into firmware/tvf_player/data/, then Upload LittleFS Data")
     if do_audio:
-        print(f"  sd/mp3/0001.mp3 ...      -> copy the whole mp3/ folder onto a "
+        print(f"  sd/{mp3_dir.name}/{mp3_pattern % 1} ...\n"
+              f"      -> copy the whole {mp3_dir.name}/ folder onto the DFPlayer's "
               f"FAT32 microSD, at the root")
+        if a.sdcard and not a.slot:
+            print("\nnote: this video's sound went in /mp3. Fine for one video on the "
+                  "card - for\nseveral, pack each with its own --slot so their sound "
+                  "doesn't overlap.", file=sys.stderr)
 
 
 if __name__ == "__main__":

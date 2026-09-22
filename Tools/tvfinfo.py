@@ -12,7 +12,7 @@ import struct
 import sys
 from pathlib import Path
 
-HEADER = struct.Struct("<4sBBHHBBIII")
+HEADER = struct.Struct("<4sBBHHBBIIIB")
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
         sys.exit(2)
 
     (magic, version, mode, w, h, fps, chunk,
-     count, index_offset, max_frame) = HEADER.unpack_from(raw, 0)
+     count, index_offset, max_frame, slot) = HEADER.unpack_from(raw, 0)
 
     print(f"file          {path.name}  ({size:,} bytes)")
     print(f"magic         {magic.decode('ascii', 'replace')}  version {version}")
@@ -37,6 +37,8 @@ def main():
     print(f"picture       {w}x{h} @ {fps}fps")
     print(f"frames        {count}  ({count / fps:.1f}s)")
     print(f"audio chunk   {chunk}s" if chunk else "audio chunk   none (single track)")
+    print(f"audio folder  /{slot:02d}/001.mp3 ... (slot {slot})" if slot
+          else "audio folder  /mp3/0001.mp3 ...")
     print(f"index at      {index_offset:,}")
     print(f"largest frame {max_frame:,} bytes")
 

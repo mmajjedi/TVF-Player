@@ -6,7 +6,7 @@ seeking logic, no metadata. The ESP32 should never have to think.
 All integers are little-endian, matching the ESP32's native order, so the
 header can be read straight into a packed struct with one `read()`.
 
-## Header — 24 used bytes in a 32-byte block, at offset 0
+## Header — 25 used bytes in a 32-byte block, at offset 0
 
 | Offset | Type | Field | Notes |
 |---|---|---|---|
@@ -20,11 +20,18 @@ header can be read straight into a packed struct with one `read()`.
 | 12 | uint32 | `frameCount` | |
 | 16 | uint32 | `indexOffset` | absolute offset of the index |
 | 20 | uint32 | `maxFrameSize` | largest frame, used to size one heap buffer |
-| 24 | — | padding | 8 spare bytes, zero |
+| 24 | uint8 | `audioFolder` | DFPlayer folder 1–99 holding the sound as `/NN/001.mp3…`; 0 = `/mp3/0001.mp3…` |
+| 25 | — | padding | 7 spare bytes, zero |
 
 Byte 11 was a reserved byte in the first version. Files made before audio
 existed read 0 there, which the player treats as "no audio", so old files
 still play.
+
+Byte 24 was padding until the SD card version. Older files read 0 there,
+which means the `/mp3` folder — exactly where their sound already was. It is
+set by `tvfpack.py --slot N`, and it is what lets the SD card menu pair each
+video with its own audio: the video can be renamed freely, the number inside
+it doesn't change.
 
 ## Frames — from offset 32
 
@@ -55,5 +62,8 @@ wants: `frameOffset[n]`, seek, read, decode.
 - `chunkSeconds` is what keeps audio and video locked. The firmware derives
   the track count as `ceil(frameCount / (fps × chunkSeconds))`, so nothing has
   to be configured by hand when a clip changes.
-- `maxFrameSize` exists so the firmware can `malloc` exactly one buffer at
-  boot and never allocate again.
+- `maxFrameSize` exists so the firmware can `malloc` exactly one frame
+  buffer per clip.
+- The firmware doesn't load the whole index: it reads it 256 entries at a
+  time as playback moves along, so an hours-long clip from the SD card costs
+  the same 1 kB of RAM as a 15-second one.

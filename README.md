@@ -11,19 +11,25 @@ video onto it.
 
 ---
 
-## ⚠️ Version 1 — short clips only
+## Two ways to build it
 
-The video lives inside the ESP32's own memory, and there is only about **2 MB**
-of it. That works out to roughly **15–20 seconds** of video. This version is
-built for a demo, a prop, a reel — not a full episode.
+The same program does both — one line at the top of the sketch picks which.
 
-**Version 2 will add an SD card module**, which moves the video off the chip
-and onto a card. That removes the limit completely: full-length episodes, and
-a menu on screen to choose between several videos. That version is in
-progress — watch the repo.
+| | **A. Straight onto the ESP32** | **B. SD card module** |
+|---|---|---|
+| Where the video lives | the ESP32's own memory | a microSD card in an SD card module |
+| How long | about **15–20 seconds** | hours — limited only by the card |
+| How many videos | one, loops forever | as many as you like, picked from an on-screen menu |
+| Extra parts | none | SD card module, second microSD, 3 buttons |
+| Setting in the sketch | `VIDEO_SOURCE SOURCE_FLASH` (the default) | `VIDEO_SOURCE SOURCE_SDCARD` |
 
-So if you build this today, keep your clip short. The packing tool will tell
-you if it's too long, and exactly what to change.
+Option A is built for a demo, a prop, a reel. The ESP32 only has about
+**2 MB** of room, so keep the clip short — the packing tool will tell you if
+it's too long, and exactly what to change.
+
+Option B is the full pocket TV. Everything below is the same for both, except
+where a step says **(B)** — the SD card parts are in
+[their own section](#option-b--the-sd-card-module) further down.
 
 ---
 
@@ -52,6 +58,9 @@ together instead of slowly drifting apart.
 | 1 kΩ resistor | important — see the wiring note |
 | 2 batteries (3.7 V) | one for the board + screen, one for the music module |
 | Jumper wires | |
+| **(B)** SD card module | the common SPI "Micro SD card adapter" |
+| **(B)** second microSD card | for the videos, formatted **FAT32** |
+| **(B)** 3 push buttons | up, down, OK — optional if you only put one video on the card |
 
 ---
 
@@ -115,8 +124,9 @@ people hit later. Do all of it before touching the wires.
 
 ### Board settings
 
-With the board selected, set these under **Tools**. The partition one is not
-optional — get it wrong and the video won't fit.
+With the board selected, set these under **Tools**. For option A the
+partition one is not optional — get it wrong and the video won't fit. (For
+option B it doesn't matter, and you don't need the LittleFS uploader either.)
 
 | Setting | Value |
 |---|---|
@@ -283,7 +293,12 @@ the video file, not the wiring.
 | Board restarts during playback | Those current bursts. Separate the batteries, or add the 470 µF capacitor. |
 | Picture blocky or mushy | `-q` is too low. Raise it (try `-q 80`) and shorten the clip to pay for it. |
 | Speckles or torn lines that move on a still picture | Not the file — that's the wiring. Shorter jumper wires, check the ground, and see the note below the table. |
-| "File too big" when packing | Version 1's limit. Shorter clip, lower `-q`, or lower `--fps`. |
+| "File too big" when packing | Option A's limit. Shorter clip, lower `-q`, or lower `--fps` — or switch to option B. |
+| **(B)** "no SD card" on screen | Check the four SD wires, that the module has 5 V if it has a regulator, and that the card is FAT32. |
+| **(B)** "no .tvf on card" | The `.tvf` files must sit at the root of the SD module's card, not in a folder. |
+| **(B)** Board won't boot with the SD module plugged in | MISO is on GPIO12 by mistake. It must be GPIO19. |
+| **(B)** Wrong sound for a video | Two videos were packed with the same `--slot`. Repack one with a free number. |
+| **(B)** Menu doesn't move | A button is wired to 3V3 instead of GND. They go between the pin and GND. |
 
 **About that last one:** if the noise is random speckles or torn horizontal
 lines that keep moving even when the picture is frozen, no packing setting will
@@ -291,6 +306,103 @@ fix it — the data is getting scrambled on the way to the screen. Use short
 jumper wires (under 10 cm), make sure the ground connection is solid, and if it
 persists, add `tft.setSPISpeed(27000000);` right after `tft.init(...)` in the
 sketch to slow the link down.
+
+---
+
+## Option B — the SD card module
+
+Build and test option A's wiring first — the screen and sound module are
+wired exactly the same. Then add the parts below.
+
+### Wire the SD card module
+
+| Module pin | Goes to | |
+|---|---|---|
+| VCC | VIN (5V) | if the module has a small 3-legged regulator chip (the common blue one does). No regulator → 3V3 instead |
+| GND | GND | |
+| SCK | GPIO14 | |
+| MOSI | GPIO13 | |
+| MISO | GPIO19 | **not** GPIO12 — that one stops the ESP32 from booting |
+| CS | GPIO4 | |
+
+The SD module does **not** share the screen's pins 18 and 23. The screen has
+no CS pin, so it listens to everything on its wires — it would try to draw the
+SD card's data as pixels. The SD module gets its own set of pins instead.
+
+### Wire the buttons
+
+Each button goes between its pin and **GND**. No resistors needed.
+
+| Button | Goes to | In the menu | While playing |
+|---|---|---|---|
+| UP | GPIO32 | move up (hold to scroll) | volume up |
+| DOWN | GPIO33 | move down (hold to scroll) | volume down |
+| OK | GPIO25 | play the highlighted video | back to the menu |
+
+If the card will only ever hold one video you can skip the buttons — with a
+single video it plays straight away, no menu.
+
+### Pack each video
+
+Add `--sdcard`, and give **each video its own `--slot` number** from 1 to 99:
+
+```
+python tools/tvfpack.py cartoon.mp4 out --sdcard --slot 1 --mode mjpeg --width 240 --height 136 --fps 15 -q 70 --audio
+python tools/tvfpack.py news.mp4    out --sdcard --slot 2 --mode mjpeg --width 240 --height 136 --fps 15 -q 70 --audio
+```
+
+The slot is how the player knows which sound belongs to which video. It's
+the folder the video's sound goes in on the music module's card, and the
+number is also saved inside the video file — so when you pick a video in the
+menu, the player goes straight to its folder. You can rename the video files
+afterwards; the pairing doesn't depend on the name.
+
+The menu shows each video by its file name, which is your input file's name
+unless you give `--name "Something Else"`. No `--start` / `--duration` needed
+— take the whole thing.
+
+You get:
+
+```
+out/videocard/cartoon.tvf   -> the SD module's card
+out/videocard/news.tvf
+out/sd/01/001.mp3 ...       -> the music module's card
+out/sd/02/001.mp3 ...
+```
+
+### Fill the two cards
+
+Two different cards, both **FAT32**:
+
+```
+SD module's card          music module's card
+/cartoon.tvf              /01/001.mp3
+/news.tvf                 /01/002.mp3
+                          /02/001.mp3
+                          ...
+```
+
+Copy the `.tvf` files to the root of the SD module's card, and the numbered
+folders (`01`, `02`, ...) to the root of the music module's card.
+
+### Switch the sketch over and upload
+
+In `tvf_player.ino`, change
+
+```cpp
+#define VIDEO_SOURCE  SOURCE_FLASH
+```
+
+to
+
+```cpp
+#define VIDEO_SOURCE  SOURCE_SDCARD
+```
+
+then **Ctrl+U**. That's the only upload — no LittleFS step for option B.
+
+After the colour bars you get the list of videos. UP/DOWN to choose, OK to
+play.
 
 ---
 
@@ -309,7 +421,7 @@ if you want to understand or change how the format works.
 ## Roadmap
 
 - [x] v1 — short clip from internal memory, with sound
-- [ ] v2 — SD card module: full-length videos, several files, on-screen menu
+- [x] v2 — SD card module: full-length videos, several files, on-screen menu
 - [ ] a 3D printed case, so it actually looks like a television
 
 ## Licence
