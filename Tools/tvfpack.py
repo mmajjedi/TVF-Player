@@ -35,6 +35,10 @@ Audio:
     is written into the .tvf header, so the player can keep picture and sound
     locked together without anything being configured by hand.
 
+    The tracks are mono, 160 kbps, levelled and high-passed by default: the
+    module drives one small speaker, so that is where the quality is. Use
+    --audio-raw to leave the sound exactly as it came in.
+
 Needs: ffmpeg on PATH, plus  python -m pip install numpy pillow
 """
 
@@ -142,7 +146,26 @@ def encode_mono(img, width, height, contrast, invert):
     return out.tobytes()
 
 
-def extract_audio(src, out_dir, pattern, chunk, bitrate, start, duration):
+def audio_filters(highpass, normalize):
+    """
+    Tuned for the little speaker this thing has, not for headphones.
+
+    highpass  bass it physically cannot move only makes the cone flap and the
+              amp clip, which is heard as mush across everything else.
+    loudnorm  brings quiet sources up to a constant level, so the volume
+              doesn't have to be pushed into distortion to hear dialogue.
+              -14 LUFS with 1.5 dB of headroom leaves room for the peaks.
+    """
+    chain = []
+    if highpass:
+        chain.append(f"highpass=f={highpass}")
+    if normalize:
+        chain.append("loudnorm=I=-14:TP=-1.5:LRA=11")
+    return ",".join(chain)
+
+
+def extract_audio(src, out_dir, pattern, chunk, bitrate, start, duration,
+                  channels, filters):
     out_dir.mkdir(parents=True, exist_ok=True)
     for old in out_dir.glob("*.mp3"):
         old.unlink()
@@ -153,9 +176,11 @@ def extract_audio(src, out_dir, pattern, chunk, bitrate, start, duration):
     cmd += ["-i", str(src)]
     if duration:
         cmd += ["-t", str(duration)]
+    if filters:
+        cmd += ["-af", filters]
     cmd += [
         "-vn",
-        "-ar", "44100", "-ac", "2", "-b:a", f"{bitrate}k",
+        "-ar", "44100", "-ac", str(channels), "-b:a", f"{bitrate}k",
         "-f", "segment",
         "-segment_time", str(chunk),
         "-segment_start_number", "1",
@@ -197,7 +222,16 @@ def main():
                    help="also write numbered MP3s for the DFPlayer")
     p.add_argument("--audio-chunk", type=int, default=30,
                    help="seconds per MP3 track, 1-255 (default 30)")
-    p.add_argument("--audio-bitrate", type=int, default=128, help="kbps (default 128)")
+    p.add_argument("--audio-bitrate", type=int, default=160,
+                   help="kbps (default 160)")
+    p.add_argument("--audio-stereo", action="store_true",
+                   help="keep stereo; the default is mono, which spends every "
+                        "kbps on the one speaker the module drives")
+    p.add_argument("--audio-highpass", type=int, default=150,
+                   help="cut bass below this many Hz, 0 for none (default 150 - a "
+                        "small speaker can't play it and clips trying)")
+    p.add_argument("--audio-raw", action="store_true",
+                   help="no levelling or filtering, just the source as it is")
     p.add_argument("--slot", type=int, default=0,
                    help="DFPlayer folder 1-99 for this video's sound, so several "
                         "videos can share one card - use a different slot for "
@@ -293,11 +327,15 @@ def main():
             longer = -(-count // (a.fps * 255))
             die(f"{needed} audio tracks won't fit one DFPlayer folder (max 255).\n"
                 f"rerun with --audio-chunk {longer} or more")
+        filters = "" if a.audio_raw else audio_filters(a.audio_highpass, True)
         tracks = extract_audio(a.input, mp3_dir, mp3_pattern, a.audio_chunk,
-                               a.audio_bitrate, a.start, a.duration)
+                               a.audio_bitrate, a.start, a.duration,
+                               1 if not a.audio_stereo else 2, filters)
         total = sum(t.stat().st_size for t in tracks)
         print(f"audio   {total/1024/1024:.2f} MB  ({len(tracks)} track(s) of "
-              f"{a.audio_chunk}s)")
+              f"{a.audio_chunk}s, {a.audio_bitrate}kbps "
+              f"{'stereo' if a.audio_stereo else 'mono'}"
+              f"{'' if a.audio_raw else ', levelled'})")
 
     print(f"\nwrote {out_dir}/")
     if a.sdcard:

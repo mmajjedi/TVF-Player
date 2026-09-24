@@ -220,6 +220,33 @@ out/sd/mp3/0001.mp3    the sound    -> goes onto the memory card
 Keep it under about 1.7 MB — shorten `--duration`, or drop `-q` a little, or
 lower `--fps`.
 
+### About the sound
+
+The sound is made for the one small speaker the module drives, so by default
+the packer:
+
+- makes the tracks **mono** — the amplifier drives a single speaker, so every
+  kbps goes into that one channel instead of being split in two
+- encodes at **160 kbps**
+- **evens out the level**, so quiet dialogue comes up without you having to
+  turn the volume into distortion
+- **cuts the deep bass** below 150 Hz, which a speaker that size can't play
+  anyway — trying only makes it flap and muddies everything else
+
+If you'd rather have the sound exactly as it came in, add `--audio-raw`. Other
+knobs: `--audio-stereo`, `--audio-bitrate 192`, `--audio-highpass 0` to keep
+the bass.
+
+In the sketch, `VOLUME` starts at 22 out of 30. The top few steps push the
+little amplifier into clipping, so if it sounds harsh, lower it before
+blaming the file. `AUDIO_EQ` right below it sets the module's tone control —
+`DFPLAYER_EQ_NORMAL` by default, with `POP`, `ROCK`, `JAZZ`, `CLASSIC` and
+`BASS` available.
+
+Most of what's left is physical: a better speaker and a sealed box behind it
+change more than any setting here. A speaker rattling loose in a case is the
+usual reason a build sounds bad.
+
 Worth doing once, to be sure the file is fine before you upload it:
 
 ```

@@ -101,7 +101,7 @@
 
 #define SOURCE_FLASH  0
 #define SOURCE_SDCARD 1
-#define VIDEO_SOURCE  SOURCE_FLASH   // <- SOURCE_SDCARD to play from the SD module
+#define VIDEO_SOURCE  SOURCE_SDCARD  // <- SOURCE_FLASH to play from the ESP32's flash
 
 #define TFT_DC     15
 #define TFT_RST    17
@@ -122,7 +122,11 @@
 
 #define DF_TX_PIN  27        // ESP32 -> DFPlayer RX, through 1k
 #define DF_RX_PIN  26        // DFPlayer TX -> ESP32
-#define VOLUME     25        // 0..30, starting volume
+#define VOLUME     22        // 0..30, starting volume. The last few steps drive
+                             // the little amp into clipping - if it sounds
+                             // harsh, this is the first thing to lower.
+#define AUDIO_EQ   DFPLAYER_EQ_NORMAL   // NORMAL, POP, ROCK, JAZZ, CLASSIC, BASS
+                             // BASS on a small speaker mostly adds mush
 
 #define TVF_PATH   "/clip.tvf"   // SOURCE_FLASH plays this one file
 #define MAX_CLIPS  100           // SOURCE_SDCARD lists up to this many
@@ -370,12 +374,15 @@ void scanClips() {
   File root = store->open("/");
   for (File f = root.openNextFile(); f && clips.size() < MAX_CLIPS;
        f = root.openNextFile()) {
-    String name = f.name();
-    name = name.substring(name.lastIndexOf('/') + 1);   // older cores give a path
+    // path() is the exact string the card wants back when opening the file.
+    // Rebuilding one from name() is what breaks on anything but plain ASCII.
+    String path = f.path();
+    if (!path.startsWith("/")) path = "/" + path;
+    String name = path.substring(path.lastIndexOf('/') + 1);
     bool isClip = !f.isDirectory() && name.length() > 4 &&
                   name.substring(name.length() - 4).equalsIgnoreCase(".tvf");
     // "._name.tvf" files are macOS metadata, not videos.
-    if (isClip && !name.startsWith(".")) clips.push_back("/" + name);
+    if (isClip && !name.startsWith(".")) clips.push_back(path);
     f.close();
   }
   root.close();
@@ -429,9 +436,16 @@ void openMenu() {
 }
 
 void playSelected() {
-  if (const char *err = openClip(clips[selected].c_str())) {
+  const String &path = clips[selected];
+  if (const char *err = openClip(path.c_str())) {
     // A bad file shouldn't take the whole menu down - say so and go back.
-    Serial.printf("%s: %s\n", clips[selected].c_str(), err);
+    // The byte dump is here because a name that looks fine on a computer can
+    // reach the ESP32 as something it can't open.
+    Serial.printf("%s: %s (exists=%d)\n", path.c_str(), err,
+                  store->exists(path) ? 1 : 0);
+    Serial.print("  name bytes:");
+    for (unsigned i = 0; i < path.length(); i++) Serial.printf(" %02X", path[i]);
+    Serial.println();
     showMessage(err);
     delay(2000);
     drawMenu(true);
@@ -488,8 +502,14 @@ void playLoop() {
   // serial, and we snap the video index to that boundary - so drift can never
   // grow past one chunk, no BUSY pin needed.
   if (audioOk && df.available()) {
-    uint8_t type = df.readType();
-    df.read();
+    uint8_t  type  = df.readType();
+    uint16_t value = df.read();
+    // A missing or unreadable track is reported here and nowhere else - without
+    // this the symptom is just silence, with no clue which file is at fault.
+    if (type == DFPlayerError) {
+      Serial.printf("DFPlayer error %u on folder %u track %u\n",
+                    value, hdr.audioFolder, currentTrack);
+    }
     if (type == DFPlayerPlayFinished) {
       if (hdr.chunkSeconds && currentTrack < trackCount) {
         startTrack(currentTrack + 1);
@@ -539,6 +559,7 @@ void setup() {
   delay(300);
   if (df.begin(dfSerial, /*isACK=*/true, /*doReset=*/true)) {
     df.volume(volume);
+    df.EQ(AUDIO_EQ);
     audioOk = true;
     Serial.println("DFPlayer ready");
   } else {
